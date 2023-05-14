@@ -2726,6 +2726,8 @@ inline static void ggml_vec_dot_f16(const int n, float * restrict s, ggml_fp16_t
 
     *s = sumf;
 }
+
+
 #if defined(__e2k__) && __iset__ >= 5
 static inline __v2di __attribute__((__always_inline__))
 e2k_dot_4_0_8_0_quants(__v2di bx, __v2di by0, __v2di by1)
@@ -2750,33 +2752,25 @@ e2k_dot_4_0_8_0_quants(__v2di bx, __v2di by0, __v2di by1)
         __v2di hi = __builtin_e2k_qppermb(by1, by0,
                       __builtin_e2k_qppackdl(0x1f1d1b1917151311LL,
                                              0x0f0d0b0907050301LL));
-#if __iset__ >= 7
+
         // Move each one in [ -8 .. +7 ] interval:
         bx0 = __builtin_e2k_qpsubb(bx0, bais);
         bx1 = __builtin_e2k_qpsubb(bx1, bais);
-
+#if __iset__ >= 7
         __v2di xy_int32 = __builtin_e2k_qpidotsbwss(bx0, lo, __builtin_e2k_qppackdl(0, 0));
                xy_int32 = __builtin_e2k_qpidotsbwss(bx1, hi, xy_int32);
 #else
         // Get absolute values of "x" vectors:
-        __v2di ax0 = __builtin_e2k_qppermb(bx0 /* not used */,
-                        __builtin_e2k_qppackdl(0x0706050403020100LL,
-                                               0x0102030405060708LL), bx0);
-        __v2di ax1 = __builtin_e2k_qppermb(bx1 /* not used */,
-                        __builtin_e2k_qppackdl(0x0706050403020100LL,
-                                               0x0102030405060708LL), bx1);
-
-        // Move each one in [ -8 .. +7 ] interval:
-        bx0 = __builtin_e2k_qpsubb(bx0, bais);
-        bx1 = __builtin_e2k_qpsubb(bx1, bais);
+        __v2di ay0 = __builtin_e2k_qpsignb(lo, lo);
+        __v2di ay1 = __builtin_e2k_qpsignb(hi, hi);
 
         // Sign the values of the y vectors
-        __v2di sy0 = __builtin_e2k_qpsignb(lo, bx0);
-        __v2di sy1 = __builtin_e2k_qpsignb(hi, bx1);
+        __v2di sx0 = __builtin_e2k_qpsignb(bx0, lo);
+        __v2di sx1 = __builtin_e2k_qpsignb(bx1, hi);
 
         // Perform multiplication and create 16-bit values
-        __v2di dot0 = __builtin_e2k_qpmaddubsh(sy0, ax0);
-        __v2di dot1 = __builtin_e2k_qpmaddubsh(sy1, ax1);
+        __v2di dot0 = __builtin_e2k_qpmaddubsh(sx0, ay0);
+        __v2di dot1 = __builtin_e2k_qpmaddubsh(sx1, ay1);
 
         // Reduce to 8 int16_t (overflow not possible: 8 bit * 4 bit => 12 bit)
         __v2di dot = __builtin_e2k_qpaddh(dot0, dot1);
@@ -2873,6 +2867,9 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
     const __v2di zero = __builtin_e2k_qppackdl(0, 0);
     // Initialize accumulators with zeros
     __v2di acc0 = zero;
+    __v2di acc1 = zero;
+    __v2di acc2 = zero;
+    __v2di acc3 = zero;
 
     // Main loop
 #pragma loop count(1000)
@@ -2937,14 +2934,6 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
         __v2di xy2 = e2k_dot_4_0_8_0_quants(bx2, by2l, by2h);
         __v2di xy3 = e2k_dot_4_0_8_0_quants(bx3, by3l, by3h);
 
-				xy0 = __builtin_e2k_qphaddsh(xy0, xy1);
-				xy2 = __builtin_e2k_qphaddsh(xy2, xy3);
-				xy0 = __builtin_e2k_qphaddsh(xy0, xy2);
-        xy0 = __builtin_e2k_qpmaddh(xy0,
-                __builtin_e2k_qppackdl(0x0001000100010001LL,
-                                       0x0001000100010001LL));
-        xy0 = __builtin_e2k_qpistofs(xy0);
-
         // Compute combined scales for each blocks
         __v2di xla = __builtin_e2k_qppermb(xl1, xl0,
                         __builtin_e2k_qppackdl(0x8080808080808080LL,
@@ -2958,17 +2947,35 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
                                                0x1f1e1d1c03020100LL));
         __v2di ylb = __builtin_e2k_qppermb(yl8, yl5,
                         __builtin_e2k_qppackdl(0x8080808080808080LL,
-                                               0x171615140b0a0908LL));
+                                               0x171615140b0a0908));
 
-        xla = __builtin_e2k_qppackdl(e2k_getldi(xlb), e2k_getldi(xla));
-        yla = __builtin_e2k_qppackdl(e2k_getldi(ylb), e2k_getldi(yla));
-        __v2di d0_3 = __builtin_e2k_qpfmuls(xla, yla);
+        __v2di d0_1 = __builtin_e2k_qpfmuls(xla, yla);
+        __v2di d2_3 = __builtin_e2k_qpfmuls(xlb, ylb);
+
+        __v2di d0 = __builtin_e2k_qppermb(d0_1, d0_1,
+                         __builtin_e2k_qppackdl(0x0302010003020100LL,
+                                                0x0302010003020100LL));
+        __v2di d1 = __builtin_e2k_qppermb(d0_1, d0_1,
+                         __builtin_e2k_qppackdl(0x0706050407060504LL,
+                                                0x0706050407060504LL));
+        __v2di d2 = __builtin_e2k_qppermb(d2_3, d2_3,
+                         __builtin_e2k_qppackdl(0x0302010003020100LL,
+                                                0x0302010003020100LL));
+        __v2di d3  = __builtin_e2k_qppermb(d2_3, d2_3,
+                         __builtin_e2k_qppackdl(0x0706050407060504LL,
+                                                0x0706050407060504LL));
 
         // Multiply q with scale and accumulate
 #if __iset__ >= 6
-        acc0 = __builtin_e2k_qpfmas(d0_3, xy0, acc0);
+        acc0 = __builtin_e2k_qpfmas(d0, xy0, acc0);
+        acc1 = __builtin_e2k_qpfmas(d1, xy1, acc1);
+        acc2 = __builtin_e2k_qpfmas(d2, xy2, acc2);
+        acc3 = __builtin_e2k_qpfmas(d3, xy3, acc3);
 #else
-        acc0 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d0_3, xy0), acc0);
+        acc0 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d0, xy0), acc0);
+        acc1 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d1, xy1), acc1);
+        acc2 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d2, xy2), acc2);
+        acc3 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d3, xy3), acc3);
 #endif
     }
 
@@ -3011,13 +3018,6 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
         __v2di xy0 = e2k_dot_4_0_8_0_quants(bx0, by0l, by0h);
         __v2di xy1 = e2k_dot_4_0_8_0_quants(bx1, by1l, by1h);
 
-				xy0 = __builtin_e2k_qphaddsh(xy0, xy1);
-				xy0 = __builtin_e2k_qphaddsh(xy0, zero);
-        xy0 = __builtin_e2k_qpmaddh(xy0,
-                __builtin_e2k_qppackdl(0x0001000100010001LL,
-                                       0x0001000100010001LL));
-        xy0 = __builtin_e2k_qpistofs(xy0);
-
         // Compute combined scales for each blocks
         __v2di xla = __builtin_e2k_qppermb(xl1, xl0,
                         __builtin_e2k_qppackdl(0x8080808080808080LL,
@@ -3026,21 +3026,35 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
                         __builtin_e2k_qppackdl(0x8080808080808080LL,
                                                0x1f1e1d1c03020100LL));
 
-        __di d0_1 = __builtin_e2k_pfmuls(e2k_getldi(xla), e2k_getldi(yla));
-        __v2di d0_3 = __builtin_e2k_qppackdl(0, d0_1);
+        __v2di d0_1 = __builtin_e2k_qpfmuls(xla, yla);
+
+        __v2di d0 = __builtin_e2k_qppermb(d0_1, d0_1,
+                         __builtin_e2k_qppackdl(0x0302010003020100LL,
+                                                0x0302010003020100LL));
+        __v2di d1 = __builtin_e2k_qppermb(d0_1, d0_1,
+                         __builtin_e2k_qppackdl(0x0706050407060504LL,
+                                                0x0706050407060504LL));
 
         // Multiply q with scale and accumulate
 #if __iset__ >= 6
-        acc0 = __builtin_e2k_qpfmas(d0_3, xy0, acc0);
+        acc0 = __builtin_e2k_qpfmas(d0, xy0, acc0);
+        acc1 = __builtin_e2k_qpfmas(d1, xy1, acc1);
 #else
-        acc0 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d0_3, xy0), acc0);
+        acc0 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d0, xy0), acc0);
+        acc1 = __builtin_e2k_qpfadds(__builtin_e2k_qpfmuls(d1, xy1), acc1);
 #endif
     }
+
+    // Reduce accumulators to one
+    acc0 = __builtin_e2k_qpfadds(acc0, acc1);
+    acc1 = __builtin_e2k_qpfadds(acc2, acc3);
+    acc0 = __builtin_e2k_qpfadds(acc0, acc1);
 
     // Return horizontal sum of the acc vector
     type_union_128 convertor;
     convertor.__v2di = __builtin_e2k_qpfhadds(__builtin_e2k_qpfhadds(acc0, zero), zero);
     *s = convertor.f.f0;
+
 #elif defined(__AVX2__)
     // Initialize accumulator with zeros
     __m256 acc = _mm256_setzero_ps();
